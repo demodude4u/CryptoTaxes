@@ -53,7 +53,7 @@ public class Crypto1_FindTransactions {
 
 		System.out.println("\n-----\n");
 
-		File configFile = new File("reports/config.json");
+		File configFile = new File("data/config.json");
 		Preconditions.checkState(configFile.exists());
 		JSONObject configJson = new JSONObject(Files.readString(configFile.toPath()));
 

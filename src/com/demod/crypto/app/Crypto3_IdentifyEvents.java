@@ -29,7 +29,7 @@ public class Crypto3_IdentifyEvents {
 
 	public static void main(String[] args) throws JSONException, IOException {
 		int year = 2021;
-		RPC rpc = RPC.byName("BSC");
+		RPC rpc = RPC.byName("Polygon");
 
 		System.out.println("RPC: " + rpc.getName() + " -- " + rpc.getRpcUrl());
 		System.out.println("\n-----\n");
@@ -37,7 +37,7 @@ public class Crypto3_IdentifyEvents {
 		File folder = new File("reports/" + year + "/" + rpc.getName());
 		Preconditions.checkState(folder.exists());
 
-		File configFile = new File("reports/config.json");
+		File configFile = new File("data/config.json");
 		Preconditions.checkState(configFile.exists());
 		JSONObject configJson = new JSONObject(Files.readString(configFile.toPath()));
 

@@ -93,7 +93,7 @@ public class Crypto2_ScrapeTokens {
 
 			txJson.put("hash", tx.getHash());
 			txJson.put("success", receipt.isStatusOK());
-			txJson.put("url", rpc.getExplorerUrl() + "/tx/" + tx.getHash());
+			txJson.put("url", rpc.getExplorerUrl() + "tx/" + tx.getHash());
 			txJson.put("timestamp", fmtDate.format(Web3Helper.convertTimestamp(block.getTimestamp())));
 			txJson.put("from", tx.getFrom());
 			txJson.put("to", tx.getTo());

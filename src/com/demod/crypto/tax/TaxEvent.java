@@ -7,9 +7,11 @@ import java.util.Map;
 
 import org.json.JSONObject;
 
+import com.google.common.base.Preconditions;
+
 public class TaxEvent {
 	public static enum TaxEventType {
-		BUY, SELL, DEPOSIT, WITHDRAW, FEE, REWARD, UNKNOWN
+		BUY, SELL, DEPOSIT, WITHDRAW, FEE, REWARD, UNKNOWN, REMOVED, CARRYOVER
 	}
 
 	private static final DateTimeFormatter FMT_DATE_ID = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -48,6 +50,9 @@ public class TaxEvent {
 		} else {
 			id = account + " " + asset + " " + FMT_DATE_ID.format(dateTime) + " " + type.name() + " " + transactionId;
 		}
+
+		Preconditions.checkArgument(amount.compareTo(BigDecimal.ZERO) > 0, this);
+		Preconditions.checkArgument(value.compareTo(BigDecimal.ZERO) >= 0, this);
 	}
 
 	public String getAccount() {

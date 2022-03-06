@@ -16,7 +16,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Consumer;
+import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 
 import org.json.JSONObject;
@@ -25,12 +25,12 @@ import com.demod.crypto.tax.LotStrategy;
 import com.demod.crypto.tax.TaxEvent;
 import com.demod.crypto.tax.TaxEvent.TaxEventType;
 import com.demod.crypto.tax.TaxLot;
-import com.demod.crypto.tax.TaxLot.TaxLotSellType;
+import com.demod.crypto.tax.TaxLot.AccrualType;
+import com.demod.crypto.tax.TaxLot.DisposeType;
 import com.demod.crypto.util.CoinGeckoAPI;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
 import com.google.common.collect.ArrayListMultimap;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ListMultimap;
 
 public class Crypto4_GenerateTaxes {
@@ -44,25 +44,28 @@ public class Crypto4_GenerateTaxes {
 	private static final DateTimeFormatter FMT_DATE_CSV = DateTimeFormatter.ofPattern("M/d/yyyy H:mm:ss");
 
 	private static TaxLot createUnknownLot(TaxEvent event, BigDecimal amount) {
-		return new TaxLot(
+		return new TaxLot(AccrualType.UNKNOWN,
 				new TaxEvent(event.getDateTime(), event.getAccount(), TaxEventType.UNKNOWN, event.getAsset(), amount,
 						BigDecimal.ZERO, event.getTransactionId(), event.getExtraData(), event.getOriginFile(),
 						event.getOriginFileLineNumber()),
-				event.getDateTime(), amount, BigDecimal.ZERO, BigDecimal.ZERO);
+				event.getDateTime(), amount, BigDecimal.ZERO);
 	}
 
 	public static void main(String[] args) throws IOException {
-		int year = 2020;
-		LotStrategy lotStrategy = LotStrategy.FIFO;
-		boolean feeApplySell = true;
-		boolean feeApplyBuy = false;
-		// TODO Reward strategy options: report as income | $0 cost basis*
-		// TODO Fee strategy options: vanish* | sell
+		int year = 2021;
+		LotStrategy lotStrategy = LotStrategy.LGUT;
+		boolean rewardAsIncome = false;
+
+		if (args.length == 3) {
+			year = Integer.parseInt(args[0]);
+			lotStrategy = LotStrategy.valueOf(args[1]);
+			rewardAsIncome = Boolean.parseBoolean(args[2]);
+		}
 
 		File dataFolder = new File("data/" + year);
 		Preconditions.checkState(dataFolder.exists());
 
-		File configFile = new File("reports/config.json");
+		File configFile = new File("data/config.json");
 		Preconditions.checkState(configFile.exists());
 		JSONObject configJson = new JSONObject(Files.readString(configFile.toPath()));
 
@@ -85,7 +88,8 @@ public class Crypto4_GenerateTaxes {
 					headers[i] = headers[i].trim();
 				}
 
-				Verify.verify(Arrays.mismatch(headers, EXPECTED_HEADERS) == EXPECTED_HEADERS.length,
+				int mismatchIndex = Arrays.mismatch(headers, EXPECTED_HEADERS);
+				Verify.verify(mismatchIndex == EXPECTED_HEADERS.length || mismatchIndex == -1,
 						"Incorrect headers: " + Arrays.toString(headers));
 
 				String originFile = file.getName();
@@ -97,6 +101,18 @@ public class Crypto4_GenerateTaxes {
 						continue;
 					}
 					String[] cells = line.split(",");
+					if (cells.length < 7) {
+						cells = Arrays.copyOf(cells, 7);
+						for (int i = 0; i < cells.length; i++) {
+							if (cells[i] == null) {
+								cells[i] = "";
+							}
+						}
+					}
+					if (cells[0].isBlank()) {// This can happen when processing another export but keeping the original
+												// in the extra data
+						continue;
+					}
 					LocalDateTime date = LocalDateTime.parse(cells[0].trim(), FMT_DATE_CSV);
 					String account = cells[1].trim();
 					TaxEventType type = TaxEventType.valueOf(cells[2].trim());
@@ -142,7 +158,7 @@ public class Crypto4_GenerateTaxes {
 			// Set all to the earliest dateTime
 			LocalDateTime dateTime = events.stream().map(e -> e.getDateTime()).sorted().findFirst().get();
 			for (TaxEvent event : events) {
-				Verify.verify(Duration.between(dateTime, event.getDateTime()).getSeconds() < 60,
+				Verify.verify(Duration.between(dateTime, event.getDateTime()).getSeconds() < 60 * 60,
 						"DateTime too different! " + FMT_DATE_CSV.format(dateTime) + " " + event);
 				event.setDateTime(dateTime);
 			}
@@ -156,59 +172,91 @@ public class Crypto4_GenerateTaxes {
 
 		System.out.println("\n-----------------------------\n");
 
+		ListMultimap<String, TaxLot> allLots = ArrayListMultimap.create();
 		ListMultimap<String, TaxLot> allSoldLots = ArrayListMultimap.create();
 		ListMultimap<String, TaxLot> allPendingLots = ArrayListMultimap.create();
-		List<TaxEvent> pendingFees = new ArrayList<>();
 
-		try (PrintWriter pw = new PrintWriter(
-				new File("reports/" + year + "/" + year + "_" + lotStrategy.name() + "_log.csv"))) {
-			pw.println("Date,Type,Asset,Amount,Cost Basis,Proceeds,Net Profit,Fee,Age,Buy ID,Sell ID");
+		File strategyFolder = new File("reports/" + year + "/taxes/" + lotStrategy.name());
+		strategyFolder.mkdirs();
 
-			Consumer<TaxLot> printRow = l -> {
-				Verify.verify(l.isSold());
-				BigDecimal netProfit = l.getSellProceeds().subtract(l.getCostBasis());
-				long days = Duration.between(l.getBuyEvent().getDateTime(), l.getSellEvent().getDateTime()).toDays();
-				pw.println(FMT_DATE_CSV.format(l.getSellEvent().getDateTime()) + "," + l.getSellType().name() + ","
-						+ l.getBuyEvent().getAsset() + "," + l.getAmount().toPlainString() + ","
+		try (PrintWriter pw = new PrintWriter(new File(strategyFolder, year + "_" + lotStrategy.name() + "_log.csv"))) {
+			pw.println("Date,Type,Asset,Amount,Cost Basis,Proceeds,Net Profit,Age,Buy ID,Sell ID");
+
+			File assetsFolder = new File(strategyFolder, "assets");
+			assetsFolder.mkdir();
+			Map<String, PrintWriter> assetWriters = new HashMap<>();
+
+			BiConsumer<PrintWriter, TaxLot> printDisposalRow = (pwc, l) -> {
+				Verify.verify(l.isDisposed());
+				BigDecimal netProfit = l.getProceeds().subtract(l.getCostBasis());
+				long days = Duration.between(l.getBuyEvent().getDateTime(), l.getDisposeEvent().getDateTime()).toDays();
+				pwc.println(FMT_DATE_CSV.format(l.getDisposeEvent().getDateTime()) + "," + l.getDisposeType().name()
+						+ "," + l.getBuyEvent().getAsset() + "," + l.getAmount().toPlainString() + ","
 						+ l.getCostBasis().setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
-						+ l.getSellProceeds().setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
-						+ netProfit.setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
-						+ l.getFees().setScale(2, RoundingMode.HALF_UP).toPlainString() + "," + days + ","
-						+ l.getBuyEvent().getId() + "," + l.getSellEvent().getId());
+						+ l.getProceeds().setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
+						+ netProfit.setScale(2, RoundingMode.HALF_UP).toPlainString() + "," + days + ","
+						+ l.getBuyEvent().getId() + "," + l.getDisposeEvent().getId());
+			};
+			BiConsumer<PrintWriter, TaxLot> printAccrualRow = (pwc, l) -> {
+				pwc.println(FMT_DATE_CSV.format(l.getBuyEvent().getDateTime()) + "," + l.getAccrualType().name() + ","
+						+ l.getBuyEvent().getAsset() + "," + l.getAmount().toPlainString() + ","
+						+ l.getCostBasis().setScale(2, RoundingMode.HALF_UP).toPlainString() + ",,,,"
+						+ l.getBuyEvent().getId() + ",");
 			};
 
 			for (TaxEvent event : allEvents) {
 				List<TaxLot> pendingLots = allPendingLots.get(event.getAsset());
 
+				String asset = event.getAsset();
+				PrintWriter assetWriter = assetWriters.get(asset);
+				if (assetWriter == null) {
+					assetWriter = new PrintWriter(new File(assetsFolder,
+							year + "_" + lotStrategy.name() + "_" + asset.replaceAll("\\W+", "") + "_log.csv"));
+					assetWriter.println("Date,Type,Asset,Amount,Cost Basis,Proceeds,Net Profit,Age,Buy ID,Sell ID");
+					assetWriters.put(asset, assetWriter);
+				}
+
+				if (event.getType() == TaxEventType.CARRYOVER) {
+					Verify.verify(event.getDateTime().getYear() < year,
+							"Carryover event not before " + year + "! " + event.toString());
+				} else {
+					Verify.verify(event.getDateTime().getYear() == year,
+							"Event is not from " + year + "! " + event.toString());
+				}
+
 				switch (event.getType()) {
 
 				// Approach with option #1: amount is removed, but cost basis remains the same
 				// https://koinly.io/blog/deducting-crypto-trading-transfer-fees/
-				// Add the fee value to next buy or sell
+				case REMOVED:
 				case FEE:
 					BigDecimal feeAmount = event.getAmount();
 					while (feeAmount.compareTo(BigDecimal.ZERO) > 0) {
 						TaxLot pickLot;
 						if (pendingLots.size() > 0) {
-							pickLot = lotStrategy.pickLot(pendingLots);
+							pickLot = lotStrategy.pickLot(pendingLots, event.getDateTime(), feeAmount, BigDecimal.ZERO);
 						} else {
 							pickLot = createUnknownLot(event, feeAmount);
+							allLots.put(event.getAsset(), pickLot);
+							printAccrualRow.accept(pw, pickLot);
+							printAccrualRow.accept(assetWriter, pickLot);
 						}
 
 						if (feeAmount.compareTo(pickLot.getAmount()) < 0) {
 							pickLot = pickLot.split(feeAmount, BigDecimal.ZERO);
+							allLots.put(event.getAsset(), pickLot);
 						}
 
 						Verify.verify(pickLot.getAmount().compareTo(feeAmount) <= 0);
 
-						pickLot.setSold(TaxLotSellType.REMOVED, event, BigDecimal.ZERO, BigDecimal.ZERO);
+						pickLot.setRemoved(event);
 						allPendingLots.remove(event.getAsset(), pickLot);
 						allSoldLots.put(event.getAsset(), pickLot);
-						// printRow.accept(pickLot);
+						printDisposalRow.accept(pw, pickLot);
+						printDisposalRow.accept(assetWriter, pickLot);
 
 						feeAmount = feeAmount.subtract(pickLot.getAmount());
 					}
-					pendingFees.add(event);
 					break;
 
 				case SELL:
@@ -217,13 +265,17 @@ public class Crypto4_GenerateTaxes {
 					while (sellAmount.compareTo(BigDecimal.ZERO) > 0) {
 						TaxLot sellLot;
 						if (pendingLots.size() > 0) {
-							sellLot = lotStrategy.pickLot(pendingLots);
+							sellLot = lotStrategy.pickLot(pendingLots, event.getDateTime(), sellAmount, sellProceeds);
 						} else {
 							sellLot = createUnknownLot(event, sellAmount);
+							allLots.put(event.getAsset(), sellLot);
+							printAccrualRow.accept(pw, sellLot);
+							printAccrualRow.accept(assetWriter, sellLot);
 						}
 
 						if (sellAmount.compareTo(sellLot.getAmount()) < 0) {
 							sellLot = sellLot.splitProportionally(sellAmount);
+							allLots.put(event.getAsset(), sellLot);
 						}
 
 						Verify.verify(sellLot.getAmount().compareTo(sellAmount) <= 0);
@@ -237,22 +289,11 @@ public class Crypto4_GenerateTaxes {
 						}
 						sellProceeds = sellProceeds.subtract(proceeds);
 
-						BigDecimal fees = BigDecimal.ZERO;
-						if (feeApplySell) {
-							for (TaxEvent feeEvent : pendingFees) {
-								proceeds = proceeds.subtract(feeEvent.getValue());
-								fees = fees.add(feeEvent.getValue());
-							}
-							pendingFees.clear();
-						}
-						long days = Duration.between(sellLot.getBuyEvent().getDateTime(), event.getDateTime()).toDays();
-						boolean longTerm = days > 363;
-
-						sellLot.setSold(longTerm ? TaxLotSellType.LONG_TERM : TaxLotSellType.SHORT_TERM, event,
-								proceeds, fees);
+						sellLot.setSold(event, proceeds);
 						allPendingLots.remove(event.getAsset(), sellLot);
 						allSoldLots.put(event.getAsset(), sellLot);
-						printRow.accept(sellLot);
+						printDisposalRow.accept(pw, sellLot);
+						printDisposalRow.accept(assetWriter, sellLot);
 
 						sellAmount = sellAmount.subtract(sellLot.getAmount());
 					}
@@ -260,37 +301,49 @@ public class Crypto4_GenerateTaxes {
 					break;
 
 				case BUY:
-					BigDecimal costBasis = event.getValue();
-					BigDecimal fees = BigDecimal.ZERO;
-					if (feeApplyBuy) {
-						for (TaxEvent feeEvent : pendingFees) {
-							costBasis = costBasis.add(feeEvent.getValue());
-							fees = fees.add(feeEvent.getValue());
-						}
-						pendingFees.clear();
-					}
-					TaxLot buylot = new TaxLot(event, event.getDateTime(), event.getAmount(), costBasis, fees);
-					allPendingLots.put(event.getAsset(), buylot);
+					TaxLot buyLot = new TaxLot(AccrualType.BUY, event, event.getDateTime(), event.getAmount(),
+							event.getValue());
+					allPendingLots.put(event.getAsset(), buyLot);
+					allLots.put(event.getAsset(), buyLot);
+					printAccrualRow.accept(pw, buyLot);
+					printAccrualRow.accept(assetWriter, buyLot);
+					break;
+
+				case CARRYOVER:
+					TaxLot carryoverLot = new TaxLot(AccrualType.CARRYOVER, event, event.getDateTime(),
+							event.getAmount(), event.getValue());
+					allPendingLots.put(event.getAsset(), carryoverLot);
+					allLots.put(event.getAsset(), carryoverLot);
 					break;
 
 				case REWARD:
-					TaxLot rewardLot = new TaxLot(event, event.getDateTime(), event.getAmount(), BigDecimal.ZERO,
-							BigDecimal.ZERO);
+					TaxLot rewardLot;
+					if (rewardAsIncome) {
+						rewardLot = new TaxLot(AccrualType.INCOME, event, event.getDateTime(), event.getAmount(),
+								event.getValue());
+					} else {
+						rewardLot = new TaxLot(AccrualType.BUY, event, event.getDateTime(), event.getAmount(),
+								BigDecimal.ZERO);
+					}
 					allPendingLots.put(event.getAsset(), rewardLot);
+					allLots.put(event.getAsset(), rewardLot);
+					printAccrualRow.accept(pw, rewardLot);
+					printAccrualRow.accept(assetWriter, rewardLot);
 					break;
 
-				default:
+				case DEPOSIT:
+				case WITHDRAW:
+				case UNKNOWN:
 					// Ignored
 					continue;
 				}
 			}
+
+			assetWriters.forEach((a, pwc) -> pwc.close());
 		}
 
-		System.out.println("\n-----------------------------\n");
-
-		// Summary csv
 		try (PrintWriter pw = new PrintWriter(
-				new File("reports/" + year + "/" + year + "_" + lotStrategy.name() + "_summary.csv"))) {
+				new File(strategyFolder, year + "_" + lotStrategy.name() + "_summary.csv"))) {
 			pw.println("Asset,Income,Short Term,Long Term,Amount EOY " + (year - 1) + ",Amount Unknown,"
 					+ "Amount Bought,Amount Rewards,Amount Sold,Amount Fees,Amount EOY " + year + ",Cost Basis EOY "
 					+ (year - 1) + "," + "Cost Basis Sold " + year + ",Cost Basis EOY " + year
@@ -309,25 +362,22 @@ public class Crypto4_GenerateTaxes {
 			for (String asset : assetOrder) {
 				List<TaxEvent> events = allEvents.stream().filter(e -> e.getAsset().equals(asset))
 						.collect(Collectors.toList());
-				List<TaxLot> leftoverLots = ImmutableList.of();// TODO
+				List<TaxLot> lots = allLots.get(asset);
 				List<TaxLot> soldLots = allSoldLots.get(asset);
 				List<TaxLot> carryoverLots = allPendingLots.get(asset);
 
-				BigDecimal income = soldLots.stream().filter(l -> l.getSellType() == TaxLotSellType.INCOME)
-						.map(l -> l.getSellProceeds().subtract(l.getCostBasis()))
-						.reduce(BigDecimal.ZERO, BigDecimal::add);
+				BigDecimal income = lots.stream().filter(l -> l.getAccrualType() == AccrualType.INCOME)
+						.map(l -> l.getCostBasis()).reduce(BigDecimal.ZERO, BigDecimal::add);
 				incomeTotal = incomeTotal.add(income);
-				BigDecimal shortTerm = soldLots.stream().filter(l -> l.getSellType() == TaxLotSellType.SHORT_TERM)
-						.map(l -> l.getSellProceeds().subtract(l.getCostBasis()))
-						.reduce(BigDecimal.ZERO, BigDecimal::add);
+				BigDecimal shortTerm = soldLots.stream().filter(l -> l.getDisposeType() == DisposeType.SHORT_TERM)
+						.map(l -> l.getProceeds().subtract(l.getCostBasis())).reduce(BigDecimal.ZERO, BigDecimal::add);
 				shortTermTotal = shortTermTotal.add(shortTerm);
-				BigDecimal longTerm = soldLots.stream().filter(l -> l.getSellType() == TaxLotSellType.LONG_TERM)
-						.map(l -> l.getSellProceeds().subtract(l.getCostBasis()))
-						.reduce(BigDecimal.ZERO, BigDecimal::add);
+				BigDecimal longTerm = soldLots.stream().filter(l -> l.getDisposeType() == DisposeType.LONG_TERM)
+						.map(l -> l.getProceeds().subtract(l.getCostBasis())).reduce(BigDecimal.ZERO, BigDecimal::add);
 				longTermTotal = longTermTotal.add(longTerm);
 
-				BigDecimal amountLeftover = leftoverLots.stream().map(l -> l.getAmount()).reduce(BigDecimal.ZERO,
-						BigDecimal::add);
+				BigDecimal amountLeftover = lots.stream().filter(l -> l.getAccrualType() == AccrualType.CARRYOVER)
+						.map(l -> l.getAmount()).reduce(BigDecimal.ZERO, BigDecimal::add);
 				BigDecimal amountUnknown = soldLots.stream()
 						.filter(l -> l.getBuyEvent().getType() == TaxEventType.UNKNOWN).map(l -> l.getAmount())
 						.reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -342,8 +392,8 @@ public class Crypto4_GenerateTaxes {
 				BigDecimal amountCarryover = carryoverLots.stream().map(l -> l.getAmount()).reduce(BigDecimal.ZERO,
 						BigDecimal::add);
 
-				BigDecimal costBasisLeftover = leftoverLots.stream().map(l -> l.getCostBasis()).reduce(BigDecimal.ZERO,
-						BigDecimal::add);
+				BigDecimal costBasisLeftover = lots.stream().filter(l -> l.getAccrualType() == AccrualType.CARRYOVER)
+						.map(l -> l.getCostBasis()).reduce(BigDecimal.ZERO, BigDecimal::add);
 				costBasisLeftoverTotal = costBasisLeftoverTotal.add(costBasisLeftover);
 				BigDecimal costBasis = soldLots.stream().map(l -> l.getCostBasis()).reduce(BigDecimal.ZERO,
 						BigDecimal::add);
@@ -351,7 +401,7 @@ public class Crypto4_GenerateTaxes {
 				BigDecimal costBasisCarryover = carryoverLots.stream().map(l -> l.getCostBasis())
 						.reduce(BigDecimal.ZERO, BigDecimal::add);
 				costBasisCarryoverTotal = costBasisCarryoverTotal.add(costBasisCarryover);
-				BigDecimal proceeds = soldLots.stream().map(l -> l.getSellProceeds()).reduce(BigDecimal.ZERO,
+				BigDecimal proceeds = soldLots.stream().map(l -> l.getProceeds()).reduce(BigDecimal.ZERO,
 						BigDecimal::add);
 				proceedsTotal = proceedsTotal.add(proceeds);
 				BigDecimal netProfit = proceeds.subtract(costBasis);
@@ -378,62 +428,135 @@ public class Crypto4_GenerateTaxes {
 					+ costBasisCarryoverTotal.setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
 					+ proceedsTotal.setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
 					+ netProfitTotal.setScale(2, RoundingMode.HALF_UP).toPlainString());
+
+			System.out.println("Income: $" + incomeTotal.setScale(2, RoundingMode.HALF_UP).toPlainString());
+			System.out.println("Short Term: $" + shortTermTotal.setScale(2, RoundingMode.HALF_UP).toPlainString());
+			System.out.println("Long Term: $" + longTermTotal.setScale(2, RoundingMode.HALF_UP).toPlainString());
+			System.out.println("Net Profit: $" + netProfitTotal.setScale(2, RoundingMode.HALF_UP).toPlainString());
 		}
 
-		System.out.println("\n-----------------------------\n");
-
 		try (PrintWriter pw = new PrintWriter(
-				"reports/" + year + "/" + year + "_" + lotStrategy.name() + "_carryover.csv")) {
-			pw.println("Date,Account,Event,Asset,Amount,Value,TransactionID");
+				new File(strategyFolder, year + "_" + lotStrategy.name() + "_carryover.csv"))) {
+			pw.println("Date,Account,Event,Asset,Amount,Value,TransactionID,Original Buy ID");
 			for (TaxLot pendingLot : allPendingLots.values().stream().sorted(Comparator.comparing(l -> l.getDateTime()))
 					.collect(Collectors.toList())) {
 				LocalDateTime date = pendingLot.getDateTime();
 				String account = pendingLot.getBuyEvent().getAccount();
-				TaxEventType type = pendingLot.getBuyEvent().getType();
 				String asset = pendingLot.getBuyEvent().getAsset();
 				BigDecimal amount = pendingLot.getAmount();
 				BigDecimal value = pendingLot.getCostBasis();
 				String transactionId = pendingLot.getBuyEvent().getTransactionId();
-				pw.println(FMT_DATE_CSV.format(date) + "," + account + "," + type.name() + "," + asset + ","
+				pw.println(FMT_DATE_CSV.format(date) + "," + account + ",CARRYOVER," + asset + ","
 						+ amount.toPlainString() + "," + value.setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
-						+ transactionId);
-			}
-			for (TaxEvent feeEvent : pendingFees) {
-				LocalDateTime date = feeEvent.getDateTime();
-				String account = feeEvent.getAccount();
-				TaxEventType type = feeEvent.getType();
-				String asset = feeEvent.getAsset();
-				BigDecimal amount = BigDecimal.ZERO;
-				BigDecimal value = feeEvent.getValue();
-				String transactionId = feeEvent.getTransactionId();
-				pw.println(FMT_DATE_CSV.format(date) + "," + account + "," + type.name() + "," + asset + ","
-						+ amount.toPlainString() + "," + value.setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
-						+ transactionId);
+						+ transactionId + "," + pendingLot.getBuyEvent().getId());
 			}
 		}
 
-		System.out.println("\n-----------------------------\n");
+		final int year_f = year;
+		try (PrintWriter pw = new PrintWriter(
+				new File(strategyFolder, year + "_" + lotStrategy.name() + "_monthly.csv"))) {
+			pw.println("Asset,Category," + year + ",Jan " + year + ",Feb " + year + ",Mar " + year + ",Apr " + year
+					+ ",May " + year + ",Jun " + year + ",Jul " + year + ",Aug " + year + ",Sep " + year + ",Oct "
+					+ year + ",Nov " + year + ",Dec " + year);
 
-		Map<String, BigDecimal> netAssets = new HashMap<>();
-		for (TaxEvent event : allEvents) {
-			switch (event.getType()) {
-			case BUY:
-			case REWARD:
-				netAssets.put(event.getAsset(),
-						netAssets.getOrDefault(event.getAsset(), BigDecimal.ZERO).add(event.getAmount()));
-				break;
-			case FEE:
-			case SELL:
-				netAssets.put(event.getAsset(),
-						netAssets.getOrDefault(event.getAsset(), BigDecimal.ZERO).subtract(event.getAmount()));
-				break;
-			default:
-				break;
+			List<String> assetOrder = allEvents.stream().map(e -> e.getAsset()).distinct().sorted()
+					.collect(Collectors.toList());
+
+			for (String asset : assetOrder) {
+				String line = asset + ",Net Profit";
+
+				List<TaxLot> yearSoldLots = allSoldLots.get(asset).stream()
+						.filter(l -> l.getDisposeEvent().getDateTime().getYear() == year_f)
+						.collect(Collectors.toList());
+
+				BigDecimal yearCostBasis = yearSoldLots.stream().map(l -> l.getCostBasis()).reduce(BigDecimal.ZERO,
+						BigDecimal::add);
+				BigDecimal yearProceeds = yearSoldLots.stream().map(l -> l.getProceeds()).reduce(BigDecimal.ZERO,
+						BigDecimal::add);
+				BigDecimal yearNetProfit = yearProceeds.subtract(yearCostBasis);
+
+				line += "," + yearNetProfit.setScale(2, RoundingMode.HALF_UP).toPlainString();
+
+				for (int month = 1; month <= 12; month++) {
+					final int month_f = month;
+					List<TaxLot> monthSoldLots = yearSoldLots.stream()
+							.filter(l -> l.getDisposeEvent().getDateTime().getMonthValue() == month_f)
+							.collect(Collectors.toList());
+
+					BigDecimal monthCostBasis = monthSoldLots.stream().map(l -> l.getCostBasis())
+							.reduce(BigDecimal.ZERO, BigDecimal::add);
+					BigDecimal monthProceeds = monthSoldLots.stream().map(l -> l.getProceeds()).reduce(BigDecimal.ZERO,
+							BigDecimal::add);
+					BigDecimal monthNetProfit = monthProceeds.subtract(monthCostBasis);
+
+					line += "," + monthNetProfit.setScale(2, RoundingMode.HALF_UP).toPlainString();
+				}
+
+				pw.println(line);
 			}
+
+			pw.println();
+			for (String asset : assetOrder) {
+				String line = asset + ",Net Basis";
+
+				List<TaxLot> yearBuyLots = allLots.get(asset).stream().filter(l -> l.getDateTime().getYear() == year_f)
+						.collect(Collectors.toList());
+				List<TaxLot> yearSoldLots = allSoldLots.get(asset).stream()
+						.filter(l -> l.getDisposeEvent().getDateTime().getYear() == year_f)
+						.collect(Collectors.toList());
+
+				BigDecimal yearBuyCostBasis = yearBuyLots.stream().map(l -> l.getCostBasis()).reduce(BigDecimal.ZERO,
+						BigDecimal::add);
+				BigDecimal yearSellCostBasis = yearSoldLots.stream().map(l -> l.getCostBasis()).reduce(BigDecimal.ZERO,
+						BigDecimal::add);
+				BigDecimal yearNetCostBasis = yearBuyCostBasis.subtract(yearSellCostBasis);
+
+				line += "," + yearNetCostBasis.setScale(2, RoundingMode.HALF_UP).toPlainString();
+
+				for (int month = 1; month <= 12; month++) {
+					final int month_f = month;
+					List<TaxLot> monthBuyLots = yearBuyLots.stream()
+							.filter(l -> l.getDateTime().getMonthValue() == month_f).collect(Collectors.toList());
+					List<TaxLot> monthSoldLots = yearSoldLots.stream()
+							.filter(l -> l.getDisposeEvent().getDateTime().getMonthValue() == month_f)
+							.collect(Collectors.toList());
+
+					BigDecimal monthBuyCostBasis = monthBuyLots.stream().map(l -> l.getCostBasis())
+							.reduce(BigDecimal.ZERO, BigDecimal::add);
+					BigDecimal monthSellCostBasis = monthSoldLots.stream().map(l -> l.getCostBasis())
+							.reduce(BigDecimal.ZERO, BigDecimal::add);
+					BigDecimal monthNetCostBasis = monthBuyCostBasis.subtract(monthSellCostBasis);
+
+					line += "," + monthNetCostBasis.setScale(2, RoundingMode.HALF_UP).toPlainString();
+				}
+
+				pw.println(line);
+			}
+
 		}
-		System.out.println("Asset Net " + year + ":");
-		netAssets.entrySet().stream().sorted(Comparator.comparing(e -> e.getValue()))
-				.forEach(e -> System.out.println("\t" + e.getKey() + ": " + e.getValue().toPlainString()));
+
+//		System.out.println("\n-----------------------------\n");
+//
+//		Map<String, BigDecimal> netAssets = new HashMap<>();
+//		for (TaxEvent event : allEvents) {
+//			switch (event.getType()) {
+//			case BUY:
+//			case REWARD:
+//				netAssets.put(event.getAsset(),
+//						netAssets.getOrDefault(event.getAsset(), BigDecimal.ZERO).add(event.getAmount()));
+//				break;
+//			case FEE:
+//			case SELL:
+//				netAssets.put(event.getAsset(),
+//						netAssets.getOrDefault(event.getAsset(), BigDecimal.ZERO).subtract(event.getAmount()));
+//				break;
+//			default:
+//				break;
+//			}
+//		}
+//		System.out.println("Asset Net " + year + ":");
+//		netAssets.entrySet().stream().sorted(Comparator.comparing(e -> e.getValue()))
+//				.forEach(e -> System.out.println("\t" + e.getKey() + ": " + e.getValue().toPlainString()));
 
 	}
 
