@@ -46,9 +46,11 @@ public class TaxEvent {
 
 		// id must preserve original data
 		if (transactionId.isBlank()) {
-			id = account + " " + asset + " " + FMT_DATE_ID.format(dateTime) + " " + type.name();
+			id = account + " " + asset + " " + FMT_DATE_ID.format(dateTime) + " " + type.name() + " #"
+					+ originFileLineNumber;
 		} else {
-			id = account + " " + asset + " " + FMT_DATE_ID.format(dateTime) + " " + type.name() + " " + transactionId;
+			id = account + " " + asset + " " + FMT_DATE_ID.format(dateTime) + " " + type.name() + " " + transactionId
+					+ " #" + originFileLineNumber;
 		}
 
 		Preconditions.checkArgument(amount.compareTo(BigDecimal.ZERO) > 0, this);
