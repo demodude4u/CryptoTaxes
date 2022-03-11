@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map.Entry;
 import java.util.stream.Collectors;
@@ -22,6 +23,7 @@ import org.web3j.protocol.core.methods.response.Web3ClientVersion;
 import com.demod.crypto.evm.RPC;
 import com.demod.crypto.evm.Web3Helper;
 import com.demod.crypto.evm.Web3Helper.FindTransactionsResult;
+import com.demod.crypto.util.ConsoleArgs;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ContiguousSet;
 
@@ -40,8 +42,8 @@ public class Crypto1_FindTransactions {
 	}
 
 	public static void main(String[] args) throws IOException {
-		int year = 2020;
-		RPC rpc = RPC.byName("Ethereum");
+		int year = ConsoleArgs.argInt("Script1", "Tax Year", args, 0, LocalDate.now().getYear() - 1);
+		RPC rpc = RPC.byName(ConsoleArgs.argStringChoice("Script1", "RPC", args, 1, "Ethereum", RPC.getNames()));
 
 		Web3j web3 = rpc.createWeb3();
 		Web3Helper web3Helper = new Web3Helper(web3, rpc);

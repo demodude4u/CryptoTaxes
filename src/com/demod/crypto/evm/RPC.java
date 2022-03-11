@@ -28,6 +28,14 @@ public class RPC {
 		return rpcByName.get(name);
 	}
 
+	public static synchronized String[] getNames() {
+		if (rpcByName == null) {
+			loadRPCFile();
+		}
+
+		return rpcByName.keySet().stream().sorted().toArray(String[]::new);
+	}
+
 	private static void loadRPCFile() {
 		try {
 			File jsonFile = new File("data/rpc.json");

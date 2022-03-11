@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.lang.reflect.Field;
 import java.math.BigInteger;
 import java.nio.file.Files;
+import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -22,14 +23,15 @@ import com.demod.crypto.evm.RPC;
 import com.demod.crypto.evm.Web3Helper;
 import com.demod.crypto.explorer.BlockExplorerHelper;
 import com.demod.crypto.explorer.TokenTransfer;
+import com.demod.crypto.util.ConsoleArgs;
 import com.google.common.base.Preconditions;
 import com.google.common.util.concurrent.Uninterruptibles;
 
 public class Crypto2_ScrapeTokens {
 
 	public static void main(String[] args) throws JSONException, IOException {
-		int year = 2020;
-		RPC rpc = RPC.byName("Ethereum");
+		int year = ConsoleArgs.argInt("Script2", "Tax Year", args, 0, LocalDate.now().getYear() - 1);
+		RPC rpc = RPC.byName(ConsoleArgs.argStringChoice("Script2", "RPC", args, 1, "Ethereum", RPC.getNames()));
 
 		Web3j web3 = rpc.createWeb3();
 		BlockExplorerHelper explorerHelper = new BlockExplorerHelper(rpc);

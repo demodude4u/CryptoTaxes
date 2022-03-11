@@ -21,6 +21,7 @@ import org.json.JSONObject;
 
 import com.demod.crypto.evm.RPC;
 import com.demod.crypto.util.CoinGeckoAPI;
+import com.demod.crypto.util.ConsoleArgs;
 import com.demod.crypto.util.TokenTransferSum;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
@@ -28,8 +29,8 @@ import com.google.common.collect.ImmutableList;
 public class Crypto3_IdentifyEvents {
 
 	public static void main(String[] args) throws JSONException, IOException {
-		int year = 2021;
-		RPC rpc = RPC.byName("Polygon");
+		int year = ConsoleArgs.argInt("Script3", "Tax Year", args, 0, LocalDate.now().getYear() - 1);
+		RPC rpc = RPC.byName(ConsoleArgs.argStringChoice("Script3", "RPC", args, 1, "Ethereum", RPC.getNames()));
 
 		System.out.println("RPC: " + rpc.getName() + " -- " + rpc.getRpcUrl());
 		System.out.println("\n-----\n");

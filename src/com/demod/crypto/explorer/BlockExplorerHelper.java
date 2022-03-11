@@ -113,7 +113,13 @@ public class BlockExplorerHelper {
 							if (content.get(4).contains("ERC-1155")) {// Ignore NFTs
 								continue;
 							}
+							if (content.get(4).contains("ERC-721")) {// Ignore NFTs
+								continue;
+							}
 							if (content.get(5).contains("TokenID")) {// Ignore NFTs
+								continue;
+							}
+							if (content.get(5).contains("Token ID")) {// Ignore NFTs
 								continue;
 							}
 						}

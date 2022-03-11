@@ -6,6 +6,7 @@ import java.io.PrintWriter;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.file.Files;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -21,6 +22,8 @@ import com.demod.crypto.tax.TaxLot.DisposeType;
 import com.demod.crypto.tax.VerifyAccrual;
 import com.demod.crypto.tax.VerifyCarryover;
 import com.demod.crypto.tax.VerifyDisposal;
+import com.demod.crypto.util.CoinGeckoAPI;
+import com.demod.crypto.util.ConsoleArgs;
 import com.google.common.base.Verify;
 
 public class Crypto5_VerifyTaxes {
@@ -28,13 +31,9 @@ public class Crypto5_VerifyTaxes {
 	private static final DateTimeFormatter FMT_DATE_CSV = DateTimeFormatter.ofPattern("M/d/yyyy H:mm:ss");
 
 	public static void main(String[] args) throws IOException {
-		int year = 2021;
-		LotStrategy lotStrategy = LotStrategy.LGUT;
-
-		if (args.length > 0) {
-			year = Integer.parseInt(args[0]);
-			lotStrategy = LotStrategy.valueOf(args[1]);
-		}
+		int year = ConsoleArgs.argInt("Script5", "Tax Year", args, 0, LocalDate.now().getYear() - 1);
+		LotStrategy lotStrategy = LotStrategy.valueOf(ConsoleArgs.argStringChoice("Script5", "Lot Strategy", args, 1,
+				"LGUT", Arrays.stream(LotStrategy.values()).map(e -> e.name()).sorted().toArray(String[]::new)));
 
 		File strategyFolder = new File("reports/" + year + "/taxes/" + lotStrategy.name());
 		strategyFolder.mkdirs();
@@ -315,6 +314,17 @@ public class Crypto5_VerifyTaxes {
 				pw.println(line);
 			}
 
+		}
+		System.out.println();
+		System.out.println("Tax log verified!");
+
+		if (!CoinGeckoAPI.failedSymbols.isEmpty()) {
+			System.out.println();
+			System.out.println();
+			System.out.println("WARNING! CoinGecko failed to determine price history for the following tokens:");
+			CoinGeckoAPI.failedSymbols.forEach(s -> System.out.println("\t" + s));
+			System.out.println();
+			System.out.println("Modify coingecko-symbol-pref.json to point CoinGecko in the right direction.");
 		}
 	}
 

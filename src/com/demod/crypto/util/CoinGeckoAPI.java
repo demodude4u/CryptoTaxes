@@ -8,8 +8,8 @@ import java.nio.file.Files;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -32,6 +32,8 @@ public class CoinGeckoAPI {
 	private static Multimap<String, String> symbolToID = null;
 
 	private static JSONObject historicalPriceCacheJson = null;
+
+	public static LinkedHashSet<String> failedSymbols = new LinkedHashSet<>();
 
 	private static synchronized JSONObject callApi(String urlStr) {
 		try {
@@ -128,10 +130,14 @@ public class CoinGeckoAPI {
 
 		Collection<String> ids = symbolToID.get(symbol.toUpperCase());
 		if (ids.isEmpty()) {
-			throw new IllegalArgumentException("Symbol " + symbol + " has no CoinGecko id!");
+//			throw new IllegalArgumentException("Symbol " + symbol + " has no CoinGecko id!");
+			failedSymbols.add(symbol);
+			return null;
 		} else if (ids.size() > 1) {
-			throw new IllegalArgumentException("Symbol " + symbol + " has multiple ids! "
-					+ ids.stream().collect(Collectors.joining(",", "[", "]")));
+//			throw new IllegalArgumentException("Symbol " + symbol + " has multiple ids! "
+//					+ ids.stream().collect(Collectors.joining(",", "[", "]")));
+			failedSymbols.add(symbol);
+			return null;
 		}
 
 		return ids.iterator().next();

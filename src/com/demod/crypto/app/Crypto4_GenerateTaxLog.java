@@ -7,6 +7,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.file.Files;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -26,6 +27,7 @@ import com.demod.crypto.tax.TaxEvent.TaxEventType;
 import com.demod.crypto.tax.TaxLot;
 import com.demod.crypto.tax.TaxLot.AccrualType;
 import com.demod.crypto.util.CoinGeckoAPI;
+import com.demod.crypto.util.ConsoleArgs;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
 import com.google.common.collect.ArrayListMultimap;
@@ -50,15 +52,10 @@ public class Crypto4_GenerateTaxLog {
 	}
 
 	public static void main(String[] args) throws IOException {
-		int year = 2021;
-		LotStrategy lotStrategy = LotStrategy.LGUT;
-		boolean rewardAsIncome = false;
-
-		if (args.length > 0) {
-			year = Integer.parseInt(args[0]);
-			lotStrategy = LotStrategy.valueOf(args[1]);
-			rewardAsIncome = Boolean.parseBoolean(args[2]);
-		}
+		int year = ConsoleArgs.argInt("Script4", "Tax Year", args, 0, LocalDate.now().getYear() - 1);
+		LotStrategy lotStrategy = LotStrategy.valueOf(ConsoleArgs.argStringChoice("Script4", "Lot Strategy", args, 1,
+				"LGUT", Arrays.stream(LotStrategy.values()).map(e -> e.name()).sorted().toArray(String[]::new)));
+		boolean rewardAsIncome = ConsoleArgs.argBoolean("Script4", "Rewards As Income", args, 2, false);
 
 		File dataFolder = new File("data/" + year);
 		Preconditions.checkState(dataFolder.exists());
