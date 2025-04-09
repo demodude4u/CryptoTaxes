@@ -10,12 +10,13 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 
@@ -42,11 +43,12 @@ public class Crypto4_GenerateTaxLog {
 			TaxEventType.DEPOSIT, TaxEventType.SELL, TaxEventType.BUY, TaxEventType.REWARD, TaxEventType.WITHDRAW });
 
 	private static final DateTimeFormatter FMT_DATE_CSV = DateTimeFormatter.ofPattern("M/d/yyyy H:mm:ss");
+	private static final DateTimeFormatter FMT_DATE_CSV2 = DateTimeFormatter.ofPattern("M/d/yyyy H:mm");
 
 	private static TaxLot createUnknownLot(TaxEvent event, BigDecimal amount) {
 		return new TaxLot(AccrualType.UNKNOWN,
 				new TaxEvent(event.getDateTime(), event.getAccount(), TaxEventType.UNKNOWN, event.getAsset(), amount,
-						BigDecimal.ZERO, event.getTransactionId(), event.getExtraData(), event.getOriginFile(),
+						BigDecimal.ZERO, event.getTransactionId(), event.getOriginFile(),
 						event.getOriginFileLineNumber()),
 				event.getDateTime(), amount, BigDecimal.ZERO);
 	}
@@ -95,7 +97,7 @@ public class Crypto4_GenerateTaxLog {
 					if (line.isBlank()) {
 						continue;
 					}
-					String[] cells = line.split(",");
+					String[] cells = line.split(",(?=([^\"]*\"[^\"]*\")*[^\"]*$)");
 					if (cells.length < 7) {
 						cells = Arrays.copyOf(cells, 7);
 						for (int i = 0; i < cells.length; i++) {
@@ -108,14 +110,20 @@ public class Crypto4_GenerateTaxLog {
 												// in the extra data
 						continue;
 					}
-					LocalDateTime date = LocalDateTime.parse(cells[0].trim(), FMT_DATE_CSV);
+					LocalDateTime date;
+					try {
+						date = LocalDateTime.parse(cells[0].trim(), FMT_DATE_CSV);
+					} catch (DateTimeParseException e) {
+						date = LocalDateTime.parse(cells[0].trim(), FMT_DATE_CSV2);
+					}
 					String account = cells[1].trim();
 					TaxEventType type = TaxEventType.valueOf(cells[2].trim());
 					String asset = cells[3].trim();
-					BigDecimal amount = new BigDecimal(cells[4].trim());
+					BigDecimal amount = new BigDecimal(cells[4].trim().replace("\"", "").replace(",", ""));
 					BigDecimal value;
 					if (!cells[5].isBlank()) {
-						value = new BigDecimal(cells[5].trim());
+//						System.out.println("DEBUG " + cells[5]);// XXX
+						value = new BigDecimal(cells[5].trim().replace("$", "").replace("\"", "").replace(",", ""));
 					} else {
 						BigDecimal price = CoinGeckoAPI.getHistoricalPrice(asset, date.toLocalDate());
 						if (price == null) {
@@ -125,9 +133,9 @@ public class Crypto4_GenerateTaxLog {
 						}
 					}
 					String transactionId = cells[6].trim();
-					Map<String, String> extraData = new LinkedHashMap<>();
-					for (int i = 7; i < cells.length; i++) {
-						extraData.put(headers[i], cells[i].trim());
+
+					if (amount.compareTo(BigDecimal.ZERO) == 0) {
+						continue;
 					}
 
 					asset = renameSymbolsJson.optString(asset, asset);
@@ -139,25 +147,84 @@ public class Crypto4_GenerateTaxLog {
 						continue;
 					}
 
-					allEvents.add(new TaxEvent(date, account, type, asset, amount, value, transactionId, extraData,
-							originFile, originLineNumber));
+					if (type == TaxEventType.CARRYOVER) {
+						Verify.verify(date.getYear() < year,
+								"Carryover event not before " + year + "! " + originFile + "#" + originLineNumber);
+					} else {
+						Verify.verify(date.getYear() == year,
+								"Event is not from " + year + "! " + originFile + "#" + originLineNumber);
+					}
+
+					allEvents.add(new TaxEvent(date, account, type, asset, amount, value, transactionId, originFile,
+							originLineNumber));
 				}
 			}
 		}
 
-		// Ensure all transactions have the same datetime
-		allEvents.stream().collect(Collectors.groupingBy(e -> e.getTransactionId())).forEach((txId, events) -> {
-			if (txId == null || txId.isBlank()) {
-				return;
-			}
+		Map<String, List<TaxEvent>> eventsByFile = allEvents.stream()
+				.collect(Collectors.groupingBy(e -> e.getOriginFile()));
+
+		List<Entry<String, List<TaxEvent>>> transactionGroups = eventsByFile.values()
+				.stream().<Map.Entry<String, List<TaxEvent>>>flatMap(
+						l -> l.stream().filter(e -> e.getTransactionId() != null && !e.getTransactionId().isBlank())
+								.collect(Collectors.groupingBy(e -> e.getTransactionId())).entrySet().stream())
+				.collect(Collectors.toList());
+
+		for (Entry<String, List<TaxEvent>> entry : transactionGroups) {
+			String transactionId = entry.getKey();
+			List<TaxEvent> events = entry.getValue();
+
 			// Set all to the earliest dateTime
 			LocalDateTime dateTime = events.stream().map(e -> e.getDateTime()).sorted().findFirst().get();
 			for (TaxEvent event : events) {
 				Verify.verify(Duration.between(dateTime, event.getDateTime()).getSeconds() < 60 * 60,
-						"DateTime too different! " + FMT_DATE_CSV.format(dateTime) + " " + event);
+						"DateTime too different! " + FMT_DATE_CSV.format(dateTime) + " \n"
+								+ events.stream().map(Object::toString).collect(Collectors.joining("\n")));
 				event.setDateTime(dateTime);
 			}
-		});
+
+			// Combine same-typed events within the same transaction
+			events.stream().collect(Collectors.groupingBy(e -> e.getType().name() + "-" + e.getAsset()))
+					.forEach((combineType, combineEvents) -> {
+						if (combineEvents.size() > 1) {
+							TaxEvent firstEvent = combineEvents.stream()
+									.sorted(Comparator.<TaxEvent, Integer>comparing(e -> e.getOriginFileLineNumber()))
+									.findFirst().get();
+							TaxEventType type = firstEvent.getType();
+							String account = firstEvent.getAccount();
+							String asset = firstEvent.getAsset();
+
+							Verify.verify(combineEvents.stream().map(e -> e.getAsset()).distinct().count() == 1);
+
+							BigDecimal amountSum = combineEvents.stream().map(e -> e.getAmount())
+									.reduce(BigDecimal.ZERO, BigDecimal::add);
+							BigDecimal valueSum = combineEvents.stream().map(e -> e.getValue()).reduce(BigDecimal.ZERO,
+									BigDecimal::add);
+							String originFile = firstEvent.getOriginFile();
+							int originFileLineNumber = firstEvent.getOriginFileLineNumber();
+
+							TaxEvent combinedEvent = new TaxEvent(dateTime, account, type, asset, amountSum, valueSum,
+									transactionId, originFile, originFileLineNumber);
+
+							allEvents.removeAll(combineEvents);
+							allEvents.add(combinedEvent);
+						}
+					});
+
+		}
+
+		// XXX Shift all buy/reward/deposit back one day, to accomodate for time zone
+		for (TaxEvent event : allEvents) {
+			switch (event.getType()) {
+			case BUY:
+			case DEPOSIT:
+			case UNKNOWN:
+			case REWARD:
+				event.setDateTime(event.getDateTime().minusDays(1));
+			default:
+				break;
+			}
+		}
 
 		// Sort by datetime, and then by type order
 		allEvents.sort(Comparator.<TaxEvent, LocalDateTime>comparing(e -> e.getDateTime())
@@ -173,6 +240,8 @@ public class Crypto4_GenerateTaxLog {
 
 		File strategyFolder = new File("reports/" + year + "/taxes/" + lotStrategy.name());
 		strategyFolder.mkdirs();
+
+//		PrintWriter debug = new PrintWriter(new File(strategyFolder, "debug.txt"));// XXX
 
 		try (PrintWriter pw = new PrintWriter(new File(strategyFolder, year + "_" + lotStrategy.name() + "_log.csv"))) {
 			pw.println("Date,Type,Asset,Amount,Cost Basis,Proceeds,Buy ID,Sell ID,Account,TransactionID");
@@ -195,20 +264,18 @@ public class Crypto4_GenerateTaxLog {
 			};
 
 			for (TaxEvent event : allEvents) {
-				List<TaxLot> pendingLots = allPendingLots.get(event.getAsset());
+//				if (event.getAsset().equals("XLM")) {// XXX
+//					debug.println(event);
+//				}
 
-				if (event.getType() == TaxEventType.CARRYOVER) {
-					Verify.verify(event.getDateTime().getYear() < year,
-							"Carryover event not before " + year + "! " + event.toString());
-				} else {
-					Verify.verify(event.getDateTime().getYear() == year,
-							"Event is not from " + year + "! " + event.toString());
-				}
+				List<TaxLot> pendingLots = allPendingLots.get(event.getAsset());
 
 				switch (event.getType()) {
 
 				// Approach with option #1: amount is removed, but cost basis remains the same
 				// https://koinly.io/blog/deducting-crypto-trading-transfer-fees/
+				// If this results in removing an entire lot that has a cost basis, consider it
+				// a total loss (sold for $0)
 				case REMOVED:
 				case FEE:
 					BigDecimal feeAmount = event.getAmount();
@@ -229,7 +296,12 @@ public class Crypto4_GenerateTaxLog {
 
 						Verify.verify(pickLot.getAmount().compareTo(feeAmount) <= 0);
 
-						pickLot.setRemoved(event);
+						if (pickLot.getCostBasis().compareTo(BigDecimal.ZERO) > 0) {
+							pickLot.setSold(event, BigDecimal.ZERO);
+						} else {
+							pickLot.setRemoved(event);
+						}
+
 						allPendingLots.remove(event.getAsset(), pickLot);
 						allSoldLots.put(event.getAsset(), pickLot);
 						printDisposalRow.accept(pw, pickLot);
@@ -315,6 +387,8 @@ public class Crypto4_GenerateTaxLog {
 				}
 			}
 		}
+
+//		debug.close();// XXX
 
 		Crypto5_VerifyTaxes.main(new String[] { Integer.toString(year), lotStrategy.name() });
 

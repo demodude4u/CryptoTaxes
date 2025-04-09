@@ -74,7 +74,8 @@ public class Crypto5_VerifyTaxes {
 				if (type == AccrualType.CARRYOVER) {
 					Verify.verify(date.getYear() < year, "Carryover must be before " + year + "!");
 				} else {
-					Verify.verify(date.getYear() == year, "Accrual must be in " + year + "!");
+					Verify.verify(date.getYear() == year || date.plusDays(1).getYear() == year,
+							"Accrual must be in " + year + "!");
 				}
 
 				VerifyAccrual accrual = new VerifyAccrual(date, type, asset, amount, costBasis, buyId, account,
@@ -144,10 +145,16 @@ public class Crypto5_VerifyTaxes {
 		}
 
 		try (PrintWriter pw = new PrintWriter(
-				new File(strategyFolder, year + "_" + lotStrategy.name() + "_summary.csv"))) {
+				new File(strategyFolder, year + "_" + lotStrategy.name() + "_summary_detailed.csv"));
+				PrintWriter pw_S = new PrintWriter(
+						new File(strategyFolder, year + "_" + lotStrategy.name() + "_short_term.csv"));
+				PrintWriter pw_L = new PrintWriter(
+						new File(strategyFolder, year + "_" + lotStrategy.name() + "_long_term.csv"))) {
 			pw.println("Asset,Income,Short Term,Long Term,Amount EOY " + (year - 1) + ",Amount Unknown,"
 					+ "Amount Bought,Amount Income,Amount Sold,Amount Removed,Amount EOY " + year + ",Cost Basis EOY "
 					+ (year - 1) + "," + "Cost Basis Sold,Cost Basis EOY " + year + ",Proceeds,Net Profit");
+			pw_S.println("Asset,Proceeds,Amount,Sale Price,Cost,Gain/Loss");
+			pw_L.println("Asset,Proceeds,Amount,Sale Price,Cost,Gain/Loss");
 
 			List<String> assetOrder = accruals.stream().map(e -> e.getAsset()).distinct().sorted()
 					.collect(Collectors.toList());
@@ -159,6 +166,12 @@ public class Crypto5_VerifyTaxes {
 			BigDecimal costBasisCarryoverTotal = BigDecimal.ZERO;
 			BigDecimal proceedsTotal = BigDecimal.ZERO;
 			BigDecimal netProfitTotal = BigDecimal.ZERO;
+
+			BigDecimal shortTermProceedsTotal = BigDecimal.ZERO;
+			BigDecimal shortTermCostTotal = BigDecimal.ZERO;
+			BigDecimal longTermProceedsTotal = BigDecimal.ZERO;
+			BigDecimal longTermCostTotal = BigDecimal.ZERO;
+
 			for (String asset : assetOrder) {
 				List<VerifyAccrual> assetAccruals = accruals.stream().filter(l -> l.getAsset().equals(asset))
 						.collect(Collectors.toList());
@@ -220,6 +233,48 @@ public class Crypto5_VerifyTaxes {
 						+ costBasisCarryover.setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
 						+ proceeds.setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
 						+ netProfit.setScale(2, RoundingMode.HALF_UP).toPlainString());
+
+				if (shortTerm.compareTo(BigDecimal.ZERO) != 0) {
+					BigDecimal shortProceeds = assetDisposals.stream()
+							.filter(l -> l.getType() == DisposeType.SHORT_TERM).map(l -> l.getProceeds())
+							.reduce(BigDecimal.ZERO, BigDecimal::add);
+					BigDecimal shortAmount = assetDisposals.stream().filter(l -> l.getType() == DisposeType.SHORT_TERM)
+							.map(l -> l.getAmount()).reduce(BigDecimal.ZERO, BigDecimal::add);
+					BigDecimal shortCostBasis = assetDisposals.stream()
+							.filter(l -> l.getType() == DisposeType.SHORT_TERM).map(l -> l.getCostBasis())
+							.reduce(BigDecimal.ZERO, BigDecimal::add);
+
+					BigDecimal shortSalePrice = shortProceeds.setScale(10, RoundingMode.HALF_UP).divide(shortAmount,
+							RoundingMode.HALF_UP);
+
+					shortTermProceedsTotal = shortTermProceedsTotal.add(shortProceeds);
+					shortTermCostTotal = shortTermCostTotal.add(shortCostBasis);
+
+					pw_S.println(asset + "," + shortProceeds.setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
+							+ shortAmount.toPlainString() + "," + shortSalePrice.toPlainString() + ","
+							+ shortCostBasis.setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
+							+ shortTerm.setScale(2, RoundingMode.HALF_UP).toPlainString());
+				}
+
+				if (longTerm.compareTo(BigDecimal.ZERO) != 0) {
+					BigDecimal longProceeds = assetDisposals.stream().filter(l -> l.getType() == DisposeType.LONG_TERM)
+							.map(l -> l.getProceeds()).reduce(BigDecimal.ZERO, BigDecimal::add);
+					BigDecimal longAmount = assetDisposals.stream().filter(l -> l.getType() == DisposeType.LONG_TERM)
+							.map(l -> l.getAmount()).reduce(BigDecimal.ZERO, BigDecimal::add);
+					BigDecimal longCostBasis = assetDisposals.stream().filter(l -> l.getType() == DisposeType.LONG_TERM)
+							.map(l -> l.getCostBasis()).reduce(BigDecimal.ZERO, BigDecimal::add);
+
+					BigDecimal longSalePrice = longProceeds.setScale(10, RoundingMode.HALF_UP).divide(longAmount,
+							RoundingMode.HALF_UP);
+
+					longTermProceedsTotal = longTermProceedsTotal.add(longProceeds);
+					longTermCostTotal = longTermCostTotal.add(longCostBasis);
+
+					pw_L.println(asset + "," + longProceeds.setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
+							+ longAmount.toPlainString() + "," + longSalePrice.toPlainString() + ","
+							+ longCostBasis.setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
+							+ longTerm.setScale(2, RoundingMode.HALF_UP).toPlainString());
+				}
 			}
 			pw.println("(Totals)," + incomeTotal.setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
 					+ shortTermTotal.setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
@@ -229,12 +284,22 @@ public class Crypto5_VerifyTaxes {
 					+ costBasisCarryoverTotal.setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
 					+ proceedsTotal.setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
 					+ netProfitTotal.setScale(2, RoundingMode.HALF_UP).toPlainString());
+			pw_S.println("(Totals)," + shortTermProceedsTotal.setScale(2, RoundingMode.HALF_UP).toPlainString() + ",,,"
+					+ shortTermCostTotal.setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
+					+ shortTermTotal.setScale(2, RoundingMode.HALF_UP).toPlainString());
+			pw_L.println("(Totals)," + longTermProceedsTotal.setScale(2, RoundingMode.HALF_UP).toPlainString() + ",,,"
+					+ longTermCostTotal.setScale(2, RoundingMode.HALF_UP).toPlainString() + ","
+					+ longTermTotal.setScale(2, RoundingMode.HALF_UP).toPlainString());
 
 			System.out.println();
-			System.out.println("Income: $" + incomeTotal.setScale(2, RoundingMode.HALF_UP).toPlainString());
-			System.out.println("Short Term: $" + shortTermTotal.setScale(2, RoundingMode.HALF_UP).toPlainString());
-			System.out.println("Long Term: $" + longTermTotal.setScale(2, RoundingMode.HALF_UP).toPlainString());
-			System.out.println("Net Profit: $" + netProfitTotal.setScale(2, RoundingMode.HALF_UP).toPlainString());
+			System.out.println(
+					lotStrategy.name() + " Income: $" + incomeTotal.setScale(2, RoundingMode.HALF_UP).toPlainString());
+			System.out.println(lotStrategy.name() + " Short Term: $"
+					+ shortTermTotal.setScale(2, RoundingMode.HALF_UP).toPlainString());
+			System.out.println(lotStrategy.name() + " Long Term: $"
+					+ longTermTotal.setScale(2, RoundingMode.HALF_UP).toPlainString());
+			System.out.println(lotStrategy.name() + " Net Profit: $"
+					+ netProfitTotal.setScale(2, RoundingMode.HALF_UP).toPlainString());
 		}
 
 		final int year_f = year;

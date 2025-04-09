@@ -3,9 +3,6 @@ package com.demod.crypto.tax;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.Map;
-
-import org.json.JSONObject;
 
 import com.google.common.base.Preconditions;
 
@@ -23,15 +20,13 @@ public class TaxEvent {
 	private final BigDecimal amount;
 	private final BigDecimal value;
 	private final String transactionId;
-	private final Map<String, String> extraData;
 	private final String originFile;
 	private final int originFileLineNumber;
 
 	private final String id;
 
 	public TaxEvent(LocalDateTime dateTime, String account, TaxEventType type, String asset, BigDecimal amount,
-			BigDecimal value, String transactionId, Map<String, String> extraData, String originFile,
-			int originFileLineNumber) {
+			BigDecimal value, String transactionId, String originFile, int originFileLineNumber) {
 		super();
 		this.dateTime = dateTime;
 		this.account = account;
@@ -40,7 +35,6 @@ public class TaxEvent {
 		this.amount = amount;
 		this.value = value;
 		this.transactionId = transactionId;
-		this.extraData = extraData;
 		this.originFile = originFile;
 		this.originFileLineNumber = originFileLineNumber;
 
@@ -71,10 +65,6 @@ public class TaxEvent {
 
 	public LocalDateTime getDateTime() {
 		return dateTime;
-	}
-
-	public Map<String, String> getExtraData() {
-		return extraData;
 	}
 
 	public String getId() {
@@ -109,8 +99,7 @@ public class TaxEvent {
 	public String toString() {
 		return "TaxEvent [dateTime=" + dateTime + ", account=" + account + ", type=" + type + ", asset=" + asset
 				+ ", amount=" + amount.toPlainString() + ", value=$" + value.toPlainString() + ", transactionId="
-				+ transactionId + ", extraData=" + new JSONObject(extraData).toString() + ", originFile=" + originFile
-				+ ", originFileLineNumber=" + originFileLineNumber + "]";
+				+ transactionId + ", originFile=" + originFile + ", originFileLineNumber=" + originFileLineNumber + "]";
 	}
 
 }

@@ -23,7 +23,7 @@ import com.google.common.io.Resources;
 import com.google.common.util.concurrent.Uninterruptibles;
 
 public class CoinGeckoAPI {
-	public static final long API_RATE_MS = 60000L / 50L + 100L; // 50 per minute, plus 100ms padding
+	public static final long API_RATE_MS = 60000L / 10L + 100L; // 10 per minute, plus 100ms padding
 
 	private static final DateTimeFormatter fmtDate = DateTimeFormatter.ofPattern("dd-MM-yyyy");
 
@@ -36,20 +36,26 @@ public class CoinGeckoAPI {
 	public static LinkedHashSet<String> failedSymbols = new LinkedHashSet<>();
 
 	private static synchronized JSONObject callApi(String urlStr) {
-		try {
-			long currentMillis = System.currentTimeMillis();
-			long needToWait = lastApiMillis + API_RATE_MS - currentMillis;
-			if (needToWait >= 5) {
-				Uninterruptibles.sleepUninterruptibly(needToWait, TimeUnit.MILLISECONDS);
-			}
-			lastApiMillis = System.currentTimeMillis();
+		int backoffSeconds = 90;
+		while (true) {
+			try {
+				long currentMillis = System.currentTimeMillis();
+				long needToWait = lastApiMillis + API_RATE_MS - currentMillis;
+				if (needToWait >= 5) {
+					Uninterruptibles.sleepUninterruptibly(needToWait, TimeUnit.MILLISECONDS);
+				}
+				lastApiMillis = System.currentTimeMillis();
 
-			return new JSONObject(Resources.toString(new URL(urlStr), Charsets.UTF_8));
-		} catch (JSONException | IOException e) {
-			System.err.println("URL: " + urlStr);
-			e.printStackTrace();
-			System.exit(-1);
-			return null;
+				return new JSONObject(Resources.toString(new URL(urlStr), Charsets.UTF_8));
+			} catch (JSONException | IOException e) {
+				System.err.println("URL: " + urlStr);
+				e.printStackTrace();
+				System.out.println("Waiting " + backoffSeconds + " seconds...");
+				Uninterruptibles.sleepUninterruptibly(backoffSeconds, TimeUnit.SECONDS);
+				backoffSeconds *= 2;
+//				System.exit(-1);
+//				return null;
+			}
 		}
 	}
 
